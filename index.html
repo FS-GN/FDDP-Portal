@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FDDP Application Portal — Government of Nunavut</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Lora:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #F7FAF8; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #1A2820; }
+    input, select, textarea, button { font-family: inherit; }
+    input[type="file"] { width: 100%; padding: 10px 12px; border: 1.5px dashed #D4E6DF; border-radius: 8px; font-size: 13px; color: #6B8A7E; background: #EBF5F1; cursor: pointer; }
+    input[type="file"]:hover { border-color: #2A7D6B; }
+    input[type="radio"] { accent-color: #2A7D6B; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useCallback, useRef } = React;
+
+    // =========================================================
+    // CONFIGURATION — replace with your Supabase project values
+    // Supabase Dashboard → Settings → API
+    // =========================================================
+    const SUPABASE_URL      = "YOUR_SUPABASE_URL";
+    const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
+    // =========================================================
+
+    const IS_DEMO = SUPABASE_URL === "YOUR_SUPABASE_URL";
+
+    // ── Supabase helpers ──────────────────────────────────────
+    async function sbFetch(path, opts = {}, token = null) {
+      const res = await fetch(`${SUPABASE_URL}${path}`, {
+        ...opts,
+        headers: { "Content-Type":"application/json", "apikey":SUPABASE_ANON_KEY, "Authorization":`Bearer ${token||SUPABASE_ANON_KEY}`, ...opts.headers },
+      });
+      if (!res.ok) { const e = await res.json().catch(()=>({message:res.statusText})); throw new Error(e.message||e.error_description||"Request failed"); }
+      return res.status === 204 ? null : res.json();
+    }
+    const submitApplication = (data) => sbFetch("/rest/v1/applications", { method:"POST", body:JSON.stringify(data), headers:{"Prefer":"return=minimal"} });
+    const lookupStatus = async (code) => { const r = await sbFetch("/rest/v1/rpc/get_application_status",{method:"POST",body:JSON.stringify({lookup_code:code})}); return Array.isArray(r)?r[0]:null; };
+    const adminSignIn = async (email,pw) => { const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPABASE_ANON_KEY},body:JSON.stringify({email,password:pw})}); if(!res.ok){const e=await res.json();throw new Error(e.error_description||"Invalid credentials");} return res.json(); };
+    const adminSignOut = (token) => fetch(`${SUPABASE_URL}/auth/v1/logout`,{method:"POST",headers:{"apikey":SUPABASE_ANON_KEY,"Authorization":`Bearer ${token}`}}).catch(()=>{});
+    const fetchAllApps = (token) => sbFetch("/rest/v1/applications?order=created_at.desc",{method:"GET"},token);
+    const updateApp = (id,patch,token) => sbFetch(`/rest/v1/applications?id=eq.${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify(patch),headers:{"Prefer":"return=minimal"}},token);
+    const uploadQuote = async (file, appId) => {
+      const ext = file.name.split(".").pop();
+      const path = `${appId}/quote.${ext}`;
+      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/quotes/${path}`,{method:"POST",headers:{"apikey":SUPABASE_ANON_KEY,"Authorization":`Bearer ${SUPABASE_ANON_KEY}`,"Content-Type":file.type,"x-upsert":"true"},body:file});
+      if (!res.ok) throw new Error("Quote upload failed");
+      return path;
+    };
+
+    // ── Demo data ─────────────────────────────────────────────
+    const DEMO_APPS = [
+      { id:"FDDP-2026-0001", code:"ARC7-KGLT", is_inuit_beneficiary:"yes", org:"Kugluktuk Hunters & Trappers Organization", community:"Kugluktuk", contact:"Mary Aqiaruq", email:"mary@khto.ca", phone:"867-982-3001", address:"Box 10, Kugluktuk, NU X0B 0E0", category:"Fishing Equipment & Vessels", title:"Arctic Char Gill Net Expansion", amount:48500, budget_items:[{description:"Monofilament gill nets (12)",amount:18000},{description:"16' freighter canoes (2)",amount:22000},{description:"Outboard motors (2)",amount:8500}], has_quote:true, quote_filename:"khto_quote.pdf", description:"Purchase of 12 monofilament gill nets, two 16' freighter canoes, and associated outboard motors to expand community char harvest capacity.", start_date:"2026-04-01", end_date:"2026-09-30", stage:"committee", notes:"Strong technical merit. Pending committee quorum for March 18.", submitted:"2026-02-14" },
+      { id:"FDDP-2026-0002", code:"NOR4-TALQ", is_inuit_beneficiary:"yes", org:"Taloyoak Community Corporation", community:"Taloyoak (Spence Bay)", contact:"Joe Ugyuk", email:"jugyuk@taloyoak.ca", phone:"867-561-5050", address:"General Delivery, Taloyoak, NU X0B 1B0", category:"Value-Added Processing", title:"Pilot Char Filleting & Cold Storage Unit", amount:127000, budget_items:[{description:"Cold storage unit",amount:95000},{description:"Stainless filleting tables (4)",amount:22000},{description:"Installation & freight",amount:10000}], has_quote:true, quote_filename:"taloyoak_storage_quote.pdf", description:"Installation of cold storage and filleting equipment for value-added processing.", start_date:"2026-06-01", end_date:"2027-03-31", stage:"assessment", notes:"Site visit completed Feb 28. Awaiting CFIA pre-compliance checklist.", submitted:"2026-01-30" },
+      { id:"FDDP-2026-0003", code:"KVL9-ARVI", is_inuit_beneficiary:"no", org:"Arviat Fisheries Development Society", community:"Arviat", contact:"Sarah Oolooyuk", email:"s.oolooyuk@afds.ca", phone:"867-857-2244", address:"Box 450, Arviat, NU X0C 0E0", category:"Market Development & Export", title:"Kivalliq Pike Commercial Market Access", amount:32000, budget_items:[{description:"Market research consultant",amount:15000},{description:"Cold-chain logistics pilot",amount:12000},{description:"Travel & broker engagement",amount:5000}], has_quote:false, quote_filename:"", description:"Market research and logistics pilot for Northern Pike targeting southern Manitoba distributors.", start_date:"2026-03-15", end_date:"2026-12-31", stage:"agreement", notes:"Approved Jan 22. Contribution agreement in draft — awaiting org signature.", submitted:"2025-12-10" },
+    ];
+
+    // ── Constants ─────────────────────────────────────────────
+    const STAGES = [
+      {key:"received",label:"Application Received",short:"Received"},
+      {key:"eligibility",label:"Eligibility Review",short:"Eligibility"},
+      {key:"assessment",label:"Technical Assessment",short:"Assessment"},
+      {key:"committee",label:"Approval Committee",short:"Committee"},
+      {key:"decision",label:"Decision",short:"Decision"},
+      {key:"agreement",label:"Agreement Drafting",short:"Agreement"},
+      {key:"disbursed",label:"Funds Disbursed",short:"Disbursed"},
+    ];
+    const COMMUNITIES = ["Arviat","Baker Lake","Cambridge Bay","Cape Dorset (Kinngait)","Chesterfield Inlet","Clyde River (Kangiqtugaapik)","Coral Harbour (Salliq)","Gjoa Haven (Uqsuqtuuq)","Grise Fiord (Aujuittuq)","Hall Beach (Sanirajak)","Igloolik (Iglulik)","Iqaluit","Kimmirut","Kugaaruk","Kugluktuk","Naujaat (Repulse Bay)","Pangnirtung (Panniqtuuq)","Pond Inlet (Mittimatalik)","Qikiqtarjuaq","Rankin Inlet (Kangiqliniq)","Resolute (Qausuittuq)","Sanikiluaq","Taloyoak (Spence Bay)","Whale Cove (Tikirarjuaq)"];
+    const CATEGORIES = ["Fishing Equipment & Vessels","Processing Facility / Infrastructure","Market Development & Export","Training & Capacity Building","Research & Stock Assessment","Sealing Operations","Eco-Tourism / Marine Tourism","Value-Added Processing","Community Fisheries Planning","Other"];
+    const STAGE_COLORS = {received:"#2980B9",eligibility:"#2980B9",assessment:"#C4882A",committee:"#C4882A",decision:"#2A7D6B",agreement:"#3BAE8E",disbursed:"#3BAE8E"};
+    const C = {ink:"#1A2820",forest:"#1D4D35",teal:"#2A7D6B",mint:"#3BAE8E",ice:"#EBF5F1",snow:"#F7FAF8",gold:"#C4882A",amber:"#F5A623",line:"#D4E6DF",muted:"#6B8A7E",danger:"#C0392B",sky:"#2980B9"};
+
+    // ── Shared UI ─────────────────────────────────────────────
+    const Lbl = ({c}) => <div style={{fontSize:11,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.muted,marginBottom:5}}>{c}</div>;
+    const Inp = ({style,...p}) => <input style={{width:"100%",padding:"10px 12px",border:`1.5px solid ${C.line}`,borderRadius:8,fontSize:14,color:C.ink,background:"#fff",outline:"none",boxSizing:"border-box",...style}} onFocus={e=>e.target.style.borderColor=C.teal} onBlur={e=>e.target.style.borderColor=C.line} {...p}/>;
+    const Sel = ({children,style,...p}) => <select style={{width:"100%",padding:"10px 12px",border:`1.5px solid ${C.line}`,borderRadius:8,fontSize:14,color:C.ink,background:"#fff",outline:"none",boxSizing:"border-box",appearance:"none",...style}} onFocus={e=>e.target.style.borderColor=C.teal} onBlur={e=>e.target.style.borderColor=C.line} {...p}>{children}</select>;
+    const Txta = ({style,...p}) => <textarea style={{width:"100%",padding:"10px 12px",border:`1.5px solid ${C.line}`,borderRadius:8,fontSize:14,color:C.ink,background:"#fff",outline:"none",boxSizing:"border-box",resize:"vertical",minHeight:90,...style}} onFocus={e=>e.target.style.borderColor=C.teal} onBlur={e=>e.target.style.borderColor=C.line} {...p}/>;
+    const Btn = ({variant="primary",style,loading,children,...p}) => { const vs={primary:{background:C.forest,color:"#fff",border:"none"},ghost:{background:"transparent",color:C.muted,border:`1.5px solid ${C.line}`}}; return <button disabled={loading} style={{padding:"10px 22px",borderRadius:8,fontSize:14,fontWeight:700,cursor:loading?"wait":"pointer",opacity:loading?0.7:1,...vs[variant],...style}} onMouseEnter={e=>{if(!loading)e.currentTarget.style.opacity="0.85"}} onMouseLeave={e=>e.currentTarget.style.opacity=loading?"0.7":"1"} {...p}>{loading?"…":children}</button>; };
+    const Card = ({children,style}) => <div style={{background:"#fff",borderRadius:14,border:`1.5px solid ${C.line}`,padding:28,...style}}>{children}</div>;
+    const Tag = ({color=C.teal,children}) => <span style={{display:"inline-block",padding:"3px 10px",borderRadius:20,background:color+"18",color,fontSize:11,fontWeight:700,letterSpacing:".06em",textTransform:"uppercase"}}>{children}</span>;
+    const Err = ({msg}) => msg ? <div style={{color:C.danger,fontSize:13,marginTop:8,padding:"8px 12px",background:"#fdf0ef",borderRadius:6,border:`1px solid ${C.danger}30`}}>⚠ {msg}</div> : null;
+    const Fld = ({error,label,hint,children}) => <div style={{marginBottom:18}}><Lbl c={label}/>{hint&&<div style={{fontSize:12,color:C.muted,marginBottom:6}}>{hint}</div>}{children}{error&&<div style={{color:C.danger,fontSize:12,marginTop:4}}>{error}</div>}</div>;
+    const SecTitle = ({color=C.gold,children}) => <div style={{fontSize:13,fontWeight:700,color,marginBottom:18,textTransform:"uppercase",letterSpacing:".08em",paddingBottom:10,borderBottom:`1.5px solid ${C.line}`}}>{children}</div>;
+    const DemoBanner = () => <div style={{background:"#fff8e1",border:`1.5px solid ${C.amber}`,borderRadius:10,padding:"12px 18px",marginBottom:24,fontSize:13,color:"#7a5200",display:"flex",gap:10,alignItems:"center"}}><span style={{fontSize:18}}>🔧</span><div><strong>Demo Mode</strong> — data resets on refresh. Add your Supabase credentials to the CONFIG block at the top of this file to go live.</div></div>;
+
+    // ── Radio toggle helper ───────────────────────────────────
+    const RadioGroup = ({name, value, onChange, options}) => (
+      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+        {options.map(([val,label]) => (
+          <label key={val} style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",padding:"10px 16px",border:`1.5px solid ${value===val?C.teal:C.line}`,borderRadius:8,background:value===val?C.ice:"#fff",fontSize:14,fontWeight:value===val?700:400,color:value===val?C.teal:C.ink,flex:1,justifyContent:"center",transition:"all .15s",minWidth:140}}>
+            <input type="radio" name={name} value={val} checked={value===val} onChange={()=>onChange(val)} style={{accentColor:C.teal}}/>
+            {label}
+          </label>
+        ))}
+      </div>
+    );
+
+    // ── Pipeline ──────────────────────────────────────────────
+    function Pipeline({currentStage}) {
+      const idx = STAGES.findIndex(s=>s.key===currentStage);
+      return (
+        <div style={{overflowX:"auto",paddingBottom:8}}>
+          <div style={{display:"flex",alignItems:"flex-start",minWidth:560}}>
+            {STAGES.map((s,i)=>{
+              const done=i<idx,active=i===idx;
+              return (
+                <div key={s.key} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",position:"relative"}}>
+                  {i>0&&<div style={{position:"absolute",top:15,right:"50%",width:"100%",height:3,background:done||active?C.mint:C.line,zIndex:0}}/>}
+                  <div style={{width:30,height:30,borderRadius:"50%",background:active?C.teal:done?C.mint:C.line,display:"flex",alignItems:"center",justifyContent:"center",zIndex:1,border:active?`3px solid ${C.teal}`:"none",boxShadow:active?`0 0 0 4px ${C.teal}25`:"none"}}>
+                    {done&&<span style={{color:"#fff",fontSize:13,fontWeight:900}}>✓</span>}
+                    {active&&<span style={{width:8,height:8,borderRadius:"50%",background:"#fff",display:"block"}}/>}
+                  </div>
+                  <div style={{marginTop:7,fontSize:10,fontWeight:active?700:500,color:active?C.ink:done?C.teal:C.muted,textAlign:"center",lineHeight:1.3}}>{s.short}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Budget Items ──────────────────────────────────────────
+    function BudgetItems({items,setItems,error}) {
+      const add = () => setItems(p=>[...p,{description:"",amount:""}]);
+      const remove = (i) => setItems(p=>p.filter((_,x)=>x!==i));
+      const update = (i,field,val) => setItems(p=>p.map((r,x)=>x===i?{...r,[field]:val}:r));
+      const total = items.reduce((s,r)=>s+(parseFloat(r.amount)||0),0);
+      return (
+        <div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 150px 36px",gap:8,marginBottom:8}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:".06em",textTransform:"uppercase"}}>Item / Description</div>
+            <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:".06em",textTransform:"uppercase"}}>Amount (CAD $)</div>
+            <div/>
+          </div>
+          {items.map((row,i)=>(
+            <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 150px 36px",gap:8,marginBottom:8}}>
+              <Inp value={row.description} onChange={e=>update(i,"description",e.target.value)} placeholder="e.g. 16' freighter canoe, outboard motor…"/>
+              <Inp type="number" value={row.amount} onChange={e=>update(i,"amount",e.target.value)} placeholder="0.00" style={{textAlign:"right"}}/>
+              <button onClick={()=>remove(i)} style={{background:"none",border:`1.5px solid ${C.line}`,borderRadius:8,color:C.muted,fontSize:18,cursor:"pointer"}}>×</button>
+            </div>
+          ))}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10}}>
+            <button onClick={add} style={{background:"none",border:`1.5px dashed ${C.teal}`,borderRadius:8,color:C.teal,fontSize:13,fontWeight:700,padding:"8px 16px",cursor:"pointer"}}>+ Add Item</button>
+            {items.length>0&&<div style={{fontSize:14,fontWeight:700}}>Total: <span style={{color:C.gold}}>${total.toLocaleString("en-CA",{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>}
+          </div>
+          {error&&<div style={{color:C.danger,fontSize:12,marginTop:6}}>{error}</div>}
+        </div>
+      );
+    }
+
+    // ── Apply View ────────────────────────────────────────────
+    function genCode(c) {
+      const p=c?c.slice(0,3).toUpperCase().replace(/[^A-Z]/g,"X"):"GEN";
+      const n=Math.floor(1000+Math.random()*9000);
+      const a=String.fromCharCode(65+Math.floor(Math.random()*26))+String.fromCharCode(65+Math.floor(Math.random()*26));
+      return `${p}${String(n)[0]}${a[0]}-${a[1]}${String(n).slice(1)}`;
+    }
+
+    function ApplyView({demoApps,setDemoApps}) {
+      const INIT = {inuit:"",org:"",community:"",contact:"",email:"",phone:"",addr:"",city:"",postal:"",category:"",title:"",desc:"",startDate:"",endDate:"",hasQuote:""};
+      const [form,setForm] = useState(INIT);
+      const [budget,setBudget] = useState([{description:"",amount:""}]);
+      const [quoteFile,setQuoteFile] = useState(null);
+      const [errors,setErrors] = useState({});
+      const [loading,setLoading] = useState(false);
+      const [submitted,setSubmitted] = useState(null);
+      const [apiErr,setApiErr] = useState("");
+      const fileRef = useRef(null);
+      const f = (k,v) => setForm(p=>({...p,[k]:v}));
+
+      const total = budget.reduce((s,r)=>s+(parseFloat(r.amount)||0),0);
+
+      const validate = () => {
+        const e={};
+        if (!form.inuit) e.inuit="Required";
+        if (!form.org.trim()) e.org="Required";
+        if (!form.community) e.community="Required";
+        if (!form.contact.trim()) e.contact="Required";
+        if (!form.email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) e.email="Valid email required";
+        if (!form.addr.trim()) e.addr="Required";
+        if (!form.city.trim()) e.city="Required";
+        if (!form.postal.trim()) e.postal="Required";
+        if (!form.category) e.category="Required";
+        if (!form.title.trim()) e.title="Required";
+        if (form.desc.trim().length<30) e.desc="Please provide at least 30 characters";
+        if (!form.startDate) e.startDate="Required";
+        if (!form.endDate) e.endDate="Required";
+        if (budget.filter(r=>r.description.trim()&&parseFloat(r.amount)>0).length===0) e.budget="Please add at least one budget item";
+        if (!form.hasQuote) e.hasQuote="Required";
+        return e;
+      };
+
+      const handleSubmit = async () => {
+        const e=validate();
+        if (Object.keys(e).length) { setErrors(e); window.scrollTo({top:0,behavior:"smooth"}); return; }
+        setLoading(true); setApiErr("");
+        const code=genCode(form.community);
+        const id=`FDDP-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}`;
+        const today=new Date().toISOString().split("T")[0];
+        const validItems=budget.filter(r=>r.description.trim()&&parseFloat(r.amount)>0);
+        try {
+          let quotePath="";
+          if (!IS_DEMO && quoteFile) quotePath=await uploadQuote(quoteFile,id);
+          const payload={id,code,is_inuit_beneficiary:form.inuit,org:form.org,community:form.community,contact:form.contact,email:form.email,phone:form.phone,address:`${form.addr}, ${form.city}, NU ${form.postal}`,category:form.category,title:form.title,amount:total,budget_items:JSON.stringify(validItems),has_quote:form.hasQuote==="yes",quote_file_path:quotePath||(IS_DEMO&&quoteFile?quoteFile.name:""),description:form.desc,start_date:form.startDate,end_date:form.endDate,stage:"received",notes:"",submitted:today};
+          if (IS_DEMO) setDemoApps(p=>[...p,{...payload,budget_items:validItems,quote_filename:quoteFile?.name||""}]);
+          else await submitApplication(payload);
+          setSubmitted({id,code}); setForm(INIT); setBudget([{description:"",amount:""}]); setQuoteFile(null); setErrors({});
+          if (fileRef.current) fileRef.current.value="";
+        } catch(err) { setApiErr(err.message); }
+        finally { setLoading(false); }
+      };
+
+      if (submitted) return (
+        <div style={{maxWidth:560,margin:"0 auto"}}>
+          <Card style={{textAlign:"center",padding:"48px 36px"}}>
+            <div style={{fontSize:52,marginBottom:16}}>🎉</div>
+            <div style={{fontSize:22,fontWeight:800,color:C.forest,marginBottom:10}}>Application Submitted!</div>
+            <div style={{color:C.muted,marginBottom:28,lineHeight:1.6}}>Your FDDP application has been received securely. Save your access code — you will need it to check your status. A confirmation email has been sent (check junk if you don't see it within a few minutes).</div>
+            <div style={{background:C.ice,borderRadius:12,padding:"20px 28px",marginBottom:28,border:`2px dashed ${C.teal}`}}>
+              <Lbl c="Your Secure Access Code"/>
+              <div style={{fontSize:34,fontWeight:900,color:C.forest,letterSpacing:"0.12em",fontFamily:"monospace"}}>{submitted.code}</div>
+              <div style={{fontSize:12,color:C.muted,marginTop:6}}>{submitted.id}</div>
+            </div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:24,background:C.snow,borderRadius:8,padding:14,textAlign:"left",lineHeight:1.7}}>
+              🔒 <strong>Your personal information is protected.</strong> Contact details and financials are only accessible to authorized GN staff.<br/><br/>
+              ⏱ Initial eligibility review completed within <strong>15 business days</strong>.
+            </div>
+            <Btn onClick={()=>setSubmitted(null)}>Submit Another Application</Btn>
+          </Card>
+        </div>
+      );
+
+      const errCount = Object.keys(errors).length;
+
+      return (
+        <div style={{maxWidth:720,margin:"0 auto"}}>
+          {IS_DEMO&&<DemoBanner/>}
+          <div style={{marginBottom:24}}>
+            <div style={{fontSize:22,fontWeight:800,color:C.forest}}>FDDP Application Form</div>
+            <div style={{color:C.muted,marginTop:4,fontSize:14}}>Fisheries Development and Diversification Program — Government of Nunavut</div>
+          </div>
+
+          {errCount>0&&<div style={{background:"#fdf0ef",border:`1.5px solid ${C.danger}`,borderRadius:10,padding:"14px 18px",marginBottom:24,fontSize:13,color:C.danger}}>⚠ Please correct <strong>{errCount} {errCount===1?"field":"fields"}</strong> before submitting.</div>}
+
+          {/* Section 1 — Inuit Beneficiary */}
+          <Card style={{marginBottom:20,borderLeft:`4px solid ${C.teal}`}}>
+            <SecTitle color={C.teal}>Inuit Beneficiary Status</SecTitle>
+            <Fld label="Are you an Inuit Beneficiary under the Nunavut Land Claims Agreement?" error={errors.inuit}>
+              <RadioGroup name="inuit" value={form.inuit} onChange={v=>f("inuit",v)} options={[["yes","Yes"],["no","No"],["org","Organization"]]}/>
+            </Fld>
+          </Card>
+
+          {/* Section 2 — Applicant Info */}
+          <Card style={{marginBottom:20}}>
+            <SecTitle>Applicant Information</SecTitle>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 20px"}}>
+              <div style={{gridColumn:"1/-1"}}>
+                <Fld label="Organization / Applicant Name" error={errors.org}><Inp value={form.org} onChange={e=>f("org",e.target.value)} placeholder="e.g. Kugluktuk HTO"/></Fld>
+              </div>
+              <Fld label="Community" error={errors.community}>
+                <Sel value={form.community} onChange={e=>f("community",e.target.value)}>
+                  <option value="">— Select community —</option>
+                  {COMMUNITIES.map(c=><option key={c} value={c}>{c}</option>)}
+                </Sel>
+              </Fld>
+              <Fld label="Primary Contact Name" error={errors.contact}><Inp value={form.contact} onChange={e=>f("contact",e.target.value)} placeholder="Full name"/></Fld>
+              <Fld label="Email Address" error={errors.email}><Inp type="email" value={form.email} onChange={e=>f("email",e.target.value)} placeholder="name@organization.ca"/></Fld>
+              <Fld label="Phone Number" error={errors.phone}><Inp value={form.phone} onChange={e=>f("phone",e.target.value)} placeholder="867-XXX-XXXX"/></Fld>
+            </div>
+
+            <div style={{borderTop:`1.5px solid ${C.line}`,paddingTop:18,marginTop:4}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".07em",marginBottom:14}}>Mailing Address</div>
+              <Fld label="Street Address or P.O. Box" error={errors.addr}><Inp value={form.addr} onChange={e=>f("addr",e.target.value)} placeholder="e.g. Box 123 or 10 Aklavik Street"/></Fld>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 20px"}}>
+                <Fld label="City / Community" error={errors.city}><Inp value={form.city} onChange={e=>f("city",e.target.value)} placeholder="e.g. Kugluktuk"/></Fld>
+                <Fld label="Postal Code" error={errors.postal}><Inp value={form.postal} onChange={e=>f("postal",e.target.value.toUpperCase())} placeholder="X0B 0E0" maxLength={7}/></Fld>
+              </div>
+            </div>
+          </Card>
+
+          {/* Section 3 — Project Details */}
+          <Card style={{marginBottom:20}}>
+            <SecTitle>Project Details</SecTitle>
+            <Fld label="Project Category" error={errors.category}>
+              <Sel value={form.category} onChange={e=>f("category",e.target.value)}>
+                <option value="">— Select category —</option>
+                {CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+              </Sel>
+            </Fld>
+            <Fld label="Project Title" error={errors.title}><Inp value={form.title} onChange={e=>f("title",e.target.value)} placeholder="Short descriptive title"/></Fld>
+            <Fld label="Project Description" error={errors.desc} hint="Describe your objectives, planned activities, expected outcomes, and how this supports fisheries development in your community.">
+              <Txta value={form.desc} onChange={e=>f("desc",e.target.value)} placeholder="Minimum 30 characters…" style={{minHeight:110}}/>
+            </Fld>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 20px"}}>
+              <Fld label="Proposed Start Date" error={errors.startDate}><Inp type="date" value={form.startDate} onChange={e=>f("startDate",e.target.value)}/></Fld>
+              <Fld label="Proposed End Date" error={errors.endDate}><Inp type="date" value={form.endDate} onChange={e=>f("endDate",e.target.value)}/></Fld>
+            </div>
+          </Card>
+
+          {/* Section 4 — Budget */}
+          <Card style={{marginBottom:20}}>
+            <SecTitle color={C.gold}>What Would You Like to Purchase?</SecTitle>
+            <div style={{fontSize:13,color:C.muted,marginBottom:16,lineHeight:1.6}}>
+              List each item you are requesting funding for. Be as specific as possible — include make, model, or specification where applicable. A running total will appear as you add items.
+            </div>
+            <BudgetItems items={budget} setItems={setBudget} error={errors.budget}/>
+
+            <div style={{borderTop:`1.5px solid ${C.line}`,paddingTop:18,marginTop:20}}>
+              <Fld label="Do you have a supplier quote to attach?" error={errors.hasQuote} hint="A quote is not required to submit, but will help speed up the assessment process.">
+                <RadioGroup name="hasQuote" value={form.hasQuote} onChange={v=>f("hasQuote",v)} options={[["yes","Yes, I have a quote"],["no","No, not at this time"]]}/>
+              </Fld>
+
+              {form.hasQuote==="yes" && (
+                <Fld label="Attach Quote (PDF, JPG, or PNG — max 10 MB)" error={errors.quote}>
+                  <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={e=>setQuoteFile(e.target.files[0]||null)}/>
+                  {quoteFile && <div style={{marginTop:8,fontSize:13,color:C.teal,fontWeight:600}}>📎 {quoteFile.name} ({(quoteFile.size/1024/1024).toFixed(2)} MB)</div>}
+                  {IS_DEMO && <div style={{fontSize:12,color:C.muted,marginTop:6}}>Demo mode: file selected but not uploaded to server.</div>}
+                </Fld>
+              )}
+            </div>
+          </Card>
+
+          {/* Declaration */}
+          <Card style={{marginBottom:28,background:C.ice}}>
+            <div style={{fontSize:13,color:C.muted,lineHeight:1.8}}>
+              🔒 <strong>Privacy Notice:</strong> Personal information collected on this form is used solely for administering the FDDP and is protected under the <em>Access to Information and Protection of Privacy Act</em> (ATIPPA). Your information will only be accessible to authorized Department of Community Services staff.<br/><br/>
+              <strong>Declaration:</strong> I certify that the information provided is accurate and complete. I understand that submitting false or misleading information may result in disqualification from FDDP funding and potential recovery of any funds disbursed. Funding is subject to the availability of appropriations.
+            </div>
+          </Card>
+
+          <Err msg={apiErr}/>
+          <div style={{display:"flex",gap:12,justifyContent:"flex-end",marginTop:16}}>
+            <Btn variant="ghost" onClick={()=>{setForm(INIT);setBudget([{description:"",amount:""}]);setQuoteFile(null);setErrors({});if(fileRef.current)fileRef.current.value="";}}>Clear Form</Btn>
+            <Btn onClick={handleSubmit} loading={loading} style={{minWidth:180}}>Submit Application →</Btn>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Status View ───────────────────────────────────────────
+    function StatusView({demoApps}) {
+      const [code,setCode]=useState(""); const [result,setResult]=useState(null); const [err,setErr]=useState(""); const [loading,setLoading]=useState(false);
+      const lookup = async () => {
+        if(!code.trim())return; setLoading(true);setErr("");setResult(null);
+        try {
+          let found;
+          if (IS_DEMO) { const m=demoApps.find(a=>a.code.toUpperCase()===code.trim().toUpperCase()); found=m?{id:m.id,title:m.title,community:m.community,category:m.category,stage:m.stage,notes:m.notes,submitted:m.submitted}:null; }
+          else found=await lookupStatus(code.trim());
+          if(found)setResult(found); else setErr("No application found for that code. Please check and try again.");
+        } catch(e){setErr("Unable to connect. Please try again in a moment.");}
+        finally{setLoading(false);}
+      };
+      const idx=result?STAGES.findIndex(s=>s.key===result.stage):-1;
+      const pct=result?Math.round(((idx+1)/STAGES.length)*100):0;
+      return (
+        <div style={{maxWidth:640,margin:"0 auto"}}>
+          {IS_DEMO&&<DemoBanner/>}
+          <div style={{marginBottom:24}}><div style={{fontSize:22,fontWeight:800,color:C.forest}}>Check Application Status</div><div style={{color:C.muted,marginTop:4,fontSize:14}}>Enter the access code from your confirmation email.</div></div>
+          <Card style={{marginBottom:24}}>
+            <Lbl c="Application Access Code"/>
+            <div style={{display:"flex",gap:10}}><Inp value={code} onChange={e=>setCode(e.target.value.toUpperCase())} onKeyDown={e=>e.key==="Enter"&&lookup()} placeholder="e.g. ARC7-KGLT" style={{fontFamily:"monospace",fontSize:18,letterSpacing:".08em",flex:1}}/><Btn onClick={lookup} loading={loading} style={{whiteSpace:"nowrap"}}>Look Up →</Btn></div>
+            {err&&<Err msg={err}/>}
+            {IS_DEMO&&<div style={{fontSize:12,color:C.muted,marginTop:10}}>💡 Demo codes: {["ARC7-KGLT","NOR4-TALQ","KVL9-ARVI"].map((c,i)=><span key={c}>{i>0?", ":""}<span onClick={()=>setCode(c)} style={{color:C.teal,cursor:"pointer",textDecoration:"underline"}}>{c}</span></span>)}</div>}
+            <div style={{fontSize:12,color:C.muted,marginTop:10}}>🔒 Only your application stage and program notes are shown here. Personal and financial details are never displayed publicly.</div>
+          </Card>
+          {result&&(
+            <Card>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:10}}>
+                <div><div style={{fontSize:18,fontWeight:800,color:C.ink}}>{result.title}</div><div style={{fontSize:13,color:C.muted,marginTop:3}}>{result.community}</div></div>
+                <div style={{textAlign:"right"}}><Tag color={STAGE_COLORS[result.stage]}>{STAGES[idx]?.label}</Tag><div style={{fontSize:11,color:C.muted,marginTop:5,fontFamily:"monospace"}}>{result.id}</div></div>
+              </div>
+              <div style={{marginBottom:22}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><Lbl c="Progress"/><span style={{fontSize:12,color:C.muted}}>{pct}% complete</span></div><div style={{height:7,background:C.line,borderRadius:4,overflow:"hidden"}}><div style={{height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,${C.teal},${C.mint})`,borderRadius:4}}/></div></div>
+              <Pipeline currentStage={result.stage}/>
+              <div style={{borderTop:`1.5px solid ${C.line}`,marginTop:24,paddingTop:20}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>{[["Submitted",result.submitted],["Category",result.category]].map(([k,v])=><div key={k}><Lbl c={k}/><div style={{fontSize:13,color:C.ink,fontWeight:600}}>{v}</div></div>)}</div>
+                {result.notes&&<div style={{marginTop:16,background:C.ice,borderRadius:8,padding:"12px 14px",fontSize:13,color:C.muted,borderLeft:`3px solid ${C.teal}`}}><strong>Program Note:</strong> {result.notes}</div>}
+              </div>
+            </Card>
+          )}
+        </div>
+      );
+    }
+
+    // ── Admin View ────────────────────────────────────────────
+    function AdminView({demoApps,setDemoApps}) {
+      const [session,setSession]=useState(null); const [email,setEmail]=useState(""); const [password,setPassword]=useState(""); const [loginErr,setLoginErr]=useState(""); const [loginLoading,setLoginLoading]=useState(false);
+      const [apps,setApps]=useState([]); const [appsLoading,setAppsLoading]=useState(false); const [search,setSearch]=useState(""); const [filterStage,setFilterStage]=useState("");
+      const [selected,setSelected]=useState(null); const [newStage,setNewStage]=useState(""); const [note,setNote]=useState(""); const [saving,setSaving]=useState(false); const [saved,setSaved]=useState(false); const [saveErr,setSaveErr]=useState("");
+
+      const loadApps = useCallback(async (token) => { setAppsLoading(true); try { if(IS_DEMO)setApps(demoApps); else {const d=await fetchAllApps(token);setApps(d||[]);} } catch(e){console.error(e);} finally{setAppsLoading(false);} },[demoApps]);
+      React.useEffect(()=>{if(session?.isDemoSession)setApps(demoApps);},[demoApps,session]);
+
+      const handleLogin = async () => { setLoginLoading(true);setLoginErr(""); try { if(IS_DEMO){setSession({isDemoSession:true,user:{email:"demo@gov.nu.ca"}});setApps(demoApps);}else{const s=await adminSignIn(email,password);setSession(s);await loadApps(s.access_token);} } catch(e){setLoginErr(e.message);} finally{setLoginLoading(false);} };
+      const handleLogout = async () => { if(!IS_DEMO&&session?.access_token)await adminSignOut(session.access_token); setSession(null);setApps([]);setSelected(null); };
+      const openApp = (app) => { setSelected(app);setNewStage(app.stage);setNote(app.notes||"");setSaved(false);setSaveErr(""); };
+      const saveUpdate = async () => { if(!selected)return; setSaving(true);setSaveErr("");setSaved(false); try { const patch={stage:newStage,notes:note}; if(IS_DEMO){setDemoApps(p=>p.map(a=>a.id===selected.id?{...a,...patch}:a));setApps(p=>p.map(a=>a.id===selected.id?{...a,...patch}:a));}else{await updateApp(selected.id,patch,session.access_token);setApps(p=>p.map(a=>a.id===selected.id?{...a,...patch}:a));} setSelected(p=>({...p,...patch}));setSaved(true);setTimeout(()=>setSaved(false),3000); } catch(e){setSaveErr(e.message);} finally{setSaving(false);} };
+
+      const parseBudget = (app) => { if(!app.budget_items)return[]; if(Array.isArray(app.budget_items))return app.budget_items; try{return JSON.parse(app.budget_items);}catch{return[];} };
+
+      if (!session) return (
+        <div style={{maxWidth:420,margin:"60px auto"}}>
+          {IS_DEMO&&<DemoBanner/>}
+          <Card style={{padding:"40px 36px"}}>
+            <div style={{textAlign:"center",marginBottom:28}}><div style={{fontSize:36,marginBottom:12}}>🔐</div><div style={{fontSize:20,fontWeight:800,color:C.forest}}>Admin Access</div><div style={{color:C.muted,fontSize:13,marginTop:6}}>Department of Community Services — Fisheries & Sealing Division</div></div>
+            {IS_DEMO?<div style={{background:C.ice,borderRadius:8,padding:16,fontSize:13,color:C.muted,marginBottom:20,textAlign:"center"}}>Demo mode — click Sign In to access the admin panel.</div>:<><Fld label="GN Email"><Inp type="email" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()} placeholder="you@gov.nu.ca"/></Fld><Fld label="Password"><Inp type="password" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()} placeholder="••••••••"/></Fld></>}
+            <Err msg={loginErr}/><Btn onClick={handleLogin} loading={loginLoading} style={{width:"100%",marginTop:8}}>Sign In</Btn>
+            {!IS_DEMO&&<div style={{fontSize:12,color:C.muted,marginTop:16,textAlign:"center"}}>Contact your system administrator if you need access.</div>}
+          </Card>
+        </div>
+      );
+
+      const filtered=apps.filter(a=>{const q=search.toLowerCase();const mQ=!q||[a.org,a.title,a.community,a.code,a.contact].some(f=>f?.toLowerCase().includes(q));return mQ&&(!filterStage||a.stage===filterStage);});
+      const totalFunding=apps.reduce((s,a)=>s+Number(a.amount||0),0);
+      const byStage=k=>apps.filter(a=>a.stage===k).length;
+
+      return (
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:24,flexWrap:"wrap",gap:12}}>
+            <div><div style={{fontSize:22,fontWeight:800,color:C.forest}}>Admin Dashboard</div><div style={{fontSize:13,color:C.muted}}>Signed in as {session.user?.email}</div></div>
+            <Btn variant="ghost" onClick={handleLogout} style={{fontSize:12}}>Sign Out</Btn>
+          </div>
+          {IS_DEMO&&<DemoBanner/>}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:24}}>
+            {[["Total Applications",apps.length,C.ink],["Pending Review",byStage("received")+byStage("eligibility"),C.sky],["In Assessment",byStage("assessment")+byStage("committee"),C.gold],["Total Requested","$"+(totalFunding/1000).toFixed(0)+"K",C.teal]].map(([label,val,col])=>(
+              <Card key={label} style={{textAlign:"center",padding:"16px 12px"}}><div style={{fontSize:26,fontWeight:900,color:col}}>{val}</div><div style={{fontSize:11,color:C.muted,marginTop:4,fontWeight:600,letterSpacing:".05em",textTransform:"uppercase"}}>{label}</div></Card>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:selected?"1fr 410px":"1fr",gap:20,alignItems:"start"}}>
+            <div>
+              <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
+                <Inp value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search org, title, community, code…" style={{flex:1,minWidth:200}}/>
+                <Sel value={filterStage} onChange={e=>setFilterStage(e.target.value)} style={{width:"auto",minWidth:165}}>
+                  <option value="">All Stages</option>{STAGES.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}
+                </Sel>
+              </div>
+              {appsLoading&&<div style={{color:C.muted,padding:"20px 0",textAlign:"center"}}>Loading applications…</div>}
+              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                {!appsLoading&&filtered.length===0&&<div style={{color:C.muted,fontSize:14,padding:"20px 0",textAlign:"center"}}>No applications match your filters.</div>}
+                {filtered.map(app=>(
+                  <div key={app.id} onClick={()=>openApp(app)} style={{background:selected?.id===app.id?C.ice:"#fff",border:`1.5px solid ${selected?.id===app.id?C.teal:C.line}`,borderRadius:10,padding:"14px 18px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:14,color:C.ink,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{app.title}</div>
+                      <div style={{fontSize:12,color:C.muted,marginTop:2}}>{app.org} · {app.community} {app.is_inuit_beneficiary==="yes"&&<span style={{marginLeft:6,background:C.teal+"18",color:C.teal,fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:10}}>Inuit Beneficiary</span>}</div>
+                      <div style={{fontSize:11,color:C.muted,marginTop:2,fontFamily:"monospace"}}>{app.id} · {app.code}</div>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5,flexShrink:0}}>
+                      <Tag color={STAGE_COLORS[app.stage]}>{STAGES.find(s=>s.key===app.stage)?.short}</Tag>
+                      <div style={{fontSize:12,fontWeight:700,color:C.gold}}>${Number(app.amount).toLocaleString()}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {selected&&(
+              <Card style={{position:"sticky",top:20,padding:22,maxHeight:"90vh",overflowY:"auto"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18}}>
+                  <div><div style={{fontSize:15,fontWeight:800,color:C.ink,lineHeight:1.3}}>{selected.title}</div><div style={{fontSize:12,color:C.muted,marginTop:2,fontFamily:"monospace"}}>{selected.id}</div></div>
+                  <button onClick={()=>setSelected(null)} style={{background:"none",border:"none",color:C.muted,fontSize:22,cursor:"pointer",lineHeight:1}}>×</button>
+                </div>
+
+                <div style={{marginBottom:14}}><Lbl c="Inuit Beneficiary"/><Tag color={selected.is_inuit_beneficiary==="yes"?C.teal:C.muted}>{selected.is_inuit_beneficiary==="yes"?"Yes — Inuit Beneficiary":selected.is_inuit_beneficiary==="org"?"Organization":"No"}</Tag></div>
+
+                {[["Organization",selected.org],["Community",selected.community],["Contact",selected.contact],["Email",selected.email],["Phone",selected.phone||"—"],["Address",selected.address||"—"],["Category",selected.category],["Total Requested","$"+Number(selected.amount||0).toLocaleString()],["Project Dates",`${selected.start_date||"—"} → ${selected.end_date||"—"}`],["Submitted",selected.submitted]].map(([k,v])=>(
+                  <div key={k} style={{marginBottom:10}}><Lbl c={k}/><div style={{fontSize:13,color:C.ink,wordBreak:"break-word"}}>{v}</div></div>
+                ))}
+
+                {parseBudget(selected).length>0&&(
+                  <div style={{marginBottom:14}}>
+                    <Lbl c="Budget Breakdown"/>
+                    <div style={{border:`1px solid ${C.line}`,borderRadius:8,overflow:"hidden"}}>
+                      {parseBudget(selected).map((item,i)=>(
+                        <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",background:i%2===0?"#fff":C.snow,fontSize:12}}>
+                          <span style={{color:C.ink}}>{item.description}</span>
+                          <span style={{color:C.gold,fontWeight:700,marginLeft:12,whiteSpace:"nowrap"}}>${Number(item.amount).toLocaleString()}</span>
+                        </div>
+                      ))}
+                      <div style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",background:C.ice,fontSize:12,fontWeight:700,borderTop:`1px solid ${C.line}`}}>
+                        <span>Total</span><span style={{color:C.gold}}>${Number(selected.amount||0).toLocaleString()}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{marginBottom:14}}><Lbl c="Quote Attached"/>{selected.has_quote||selected.quote_filename?<div style={{fontSize:13,color:C.teal,fontWeight:600}}>📎 {selected.quote_filename||selected.quote_file_path||"Yes (on record)"}</div>:<div style={{fontSize:13,color:C.muted}}>No quote provided</div>}</div>
+                <div style={{marginBottom:14}}><Lbl c="Description"/><div style={{fontSize:12,color:C.muted,lineHeight:1.6,maxHeight:100,overflow:"auto"}}>{selected.description}</div></div>
+
+                <div style={{borderTop:`1.5px solid ${C.line}`,paddingTop:16,marginTop:4}}>
+                  <Fld label="Update Stage"><Sel value={newStage} onChange={e=>setNewStage(e.target.value)}>{STAGES.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}</Sel></Fld>
+                  <Fld label="Program Note (visible to applicant)"><Txta value={note} onChange={e=>setNote(e.target.value)} placeholder="Optional note…" style={{minHeight:70}}/></Fld>
+                  <Err msg={saveErr}/>
+                  <Btn onClick={saveUpdate} loading={saving} style={{width:"100%",marginTop:saveErr?8:0}}>{saved?"✓ Saved!":"Save Update"}</Btn>
+                </div>
+              </Card>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Root ──────────────────────────────────────────────────
+    function FDDPPortal() {
+      const [tab,setTab]=useState("apply");
+      const [demoApps,setDemoApps]=useState(DEMO_APPS);
+      const NAV=[{key:"apply",label:"Apply",icon:"📋"},{key:"status",label:"Check Status",icon:"🔍"},{key:"admin",label:"Admin",icon:"⚙️"}];
+      return (
+        <div style={{minHeight:"100vh",background:C.snow,color:C.ink}}>
+          <div style={{background:C.forest,color:"#fff"}}>
+            <div style={{maxWidth:1100,margin:"0 auto",padding:"0 24px"}}>
+              <div style={{padding:"18px 0 0",display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+                <div style={{background:C.gold,borderRadius:8,padding:"6px 10px",fontSize:18}}>🐟</div>
+                <div>
+                  <div style={{fontSize:13,letterSpacing:".12em",textTransform:"uppercase",color:"rgba(255,255,255,.55)",fontWeight:600}}>Government of Nunavut · Community Services</div>
+                  <div style={{fontSize:19,fontWeight:800,fontFamily:"'Lora',serif"}}>Fisheries Development &amp; Diversification Program</div>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:4,marginTop:16}}>
+                {NAV.map(n=><button key={n.key} onClick={()=>setTab(n.key)} style={{background:tab===n.key?"rgba(255,255,255,.12)":"transparent",border:"none",borderBottom:tab===n.key?`3px solid ${C.amber}`:"3px solid transparent",color:tab===n.key?"#fff":"rgba(255,255,255,.6)",padding:"10px 20px",fontSize:13,fontWeight:700,cursor:"pointer",letterSpacing:".04em"}}>{n.icon} {n.label}</button>)}
+              </div>
+            </div>
+          </div>
+
+          <div style={{maxWidth:1100,margin:"0 auto",padding:"36px 24px 60px"}}>
+            {tab==="apply"  &&<ApplyView  demoApps={demoApps} setDemoApps={setDemoApps}/>}
+            {tab==="status" &&<StatusView demoApps={demoApps}/>}
+            {tab==="admin"  &&<AdminView  demoApps={demoApps} setDemoApps={setDemoApps}/>}
+          </div>
+
+          <div style={{borderTop:`1.5px solid ${C.line}`,padding:"28px 24px",textAlign:"center",background:"#fff"}}>
+            <div style={{fontSize:12,color:C.muted,marginBottom:10}}>Fisheries &amp; Sealing Division · Department of Community Services · Government of Nunavut</div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:8}}>Questions or concerns? Please contact us <strong>before submitting</strong>.</div>
+            <a href="mailto:fisheries@gov.nu.ca" style={{color:C.teal,fontSize:15,fontWeight:700,textDecoration:"none",letterSpacing:".02em"}}>✉ fisheries@gov.nu.ca</a>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<FDDPPortal/>);
+  </script>
+</body>
+</html>
